@@ -1,0 +1,183 @@
+---
+title: "IGSN Resolution Metrics"
+subtitle: "Summary for 2022-07-01 ... 2022-08-31."
+jupyter: python3
+execute:
+  echo: false
+format:
+  html:
+    toc: false
+    theme:
+      - cosmo
+---
+
+Some basic statistics for use of the igsn.org resolver service use during the months of July and August, 2022.
+
+```{python}
+import os
+import sqlite3
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import IPython.display
+import itables
+
+itables.init_notebook_mode(all_interactive=True)
+
+ANALYSIS_DIR = "analysis"
+ANALYSIS_DB = os.path.join(os.path.abspath(ANALYSIS_DIR),"logs.sqlite3")
+CN = sqlite3.connect(ANALYSIS_DB)
+
+# Load the country names and codes
+ccodes = pd.read_csv("geo/country_codes.csv", quotechar='"')
+ccodes.rename(mapper={"Alpha-2 code":"country_code", "Alpha-3 code":"iso_a3"}, axis=1, inplace=True)
+ccodes = ccodes.apply(lambda x: x.str.strip(' "'))
+```
+
+## Total redirects per day
+
+The total number of redirects to `hdl.handle.net` handled by igsn.org per day. Such requests arise from a user filling in the form on the igsn.org site or directly by constructing the URL.
+
+```{python}
+sql = '''select count(*) as n, 
+  cast(strftime('%d', t) as integer) as Day, 
+  cast(strftime('%m', t) as integer) as m from logs 
+  where t>='2022-07-01T00:00:00' 
+  and redirect_url like 'http%hdl.handle.net%' 
+  group by m,Day 
+  order by m,Day asc;
+'''
+df = pd.read_sql_query(sql, CN)
+
+fig, ax = plt.subplots(figsize=(8,3))
+for labels, dfi in df.groupby("m"):
+  dfi.plot(ax=ax, x='Day', y='n', label=labels);
+a = ax.legend(title="Month");
+#IPython.display.display(fig)
+```
+
+## Total redirects per month by country
+
+The country of origin for redirect requests issued by igsn.org. Column `n` is the total requests for the month for the specified country.
+
+::: {.panel-tabset}
+
+## July
+```{python}
+month_map = {
+  7:"July",
+  8: "August"
+}
+
+sql = '''select count(*) as n, 
+country_code, 
+cast(strftime('%m', t) as integer) as m from logs 
+where t>='2022-07-01T00:00:00' 
+and redirect_url like 'http%hdl.handle.net%'
+group by m, country_code 
+order by m asc, n desc'''
+df = pd.read_sql_query(sql, CN)
+df_merged = pd.merge(
+  df, 
+  ccodes, 
+  how="left", 
+  on=["country_code"]
+)
+#df_merged.style.hide(axis=0)
+m = 7
+dfm = df_merged[df_merged['m']==m].loc[:, ['n','Country', 'country_code']].drop_duplicates(subset=['country_code'])
+_ = dfm.style.hide(axis=0)
+itables.show(
+  dfm, 
+  scrollY="480px", 
+  scrollCollapse=True, 
+  paging=False,
+  dom='tpr'
+)
+```
+
+## August
+
+```{python}
+m = 8
+dfm = df_merged[df_merged['m']==m].loc[:, ['n','Country', 'country_code']].drop_duplicates(subset=['country_code'])
+_ = dfm.style.hide(axis=0)
+itables.show(
+  dfm, 
+  scrollY="480px", 
+  scrollCollapse=True, 
+  paging=False,
+  dom='tpr'
+)
+```
+
+:::
+
+Same content as above, shown as a map.
+
+```{python}
+#| column: page
+import geopandas
+import matplotlib.colors
+import numpy as np
+
+def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
+    new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
+        'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
+        cmap(np.linspace(minval, maxval, n)))
+    return new_cmap
+
+world = geopandas.read_file(
+    geopandas.datasets.get_path('naturalearth_lowres')
+)
+ccodes = pd.read_csv("geo/country_codes.csv", quotechar='"')
+ccodes.rename(mapper={"Alpha-2 code":"country_code", "Alpha-3 code":"iso_a3"}, axis=1, inplace=True)
+ccodes = ccodes.apply(lambda x: x.str.strip(' "'))
+merged = pd.merge(df.set_index("country_code"), ccodes.set_index("country_code"), how="left", on=["country_code"])
+for _month in [7,8]:
+  wmerged = pd.merge(
+    world.set_index("iso_a3"), 
+    merged[(merged.m==_month)].set_index("iso_a3"), 
+    how="left", 
+    on=["iso_a3"]
+  )
+  fig, ax = plt.subplots(figsize=(12, 5));
+  _ = ax.axis('off');
+  _ = ax.set_title(
+    f'igsn.org resolve request origins for {month_map[_month]} 2022', 
+    fontdict={'fontsize': '10', 'fontweight' : '3'}
+  );
+  wmerged.plot(column='n', 
+    cmap='viridis', 
+    linewidth=0.9, 
+    ax=ax, 
+    edgecolor='1',
+    legend=True,
+    norm=matplotlib.colors.LogNorm(vmin=wmerged.n.min(), vmax=wmerged.n.max()),
+    missing_kwds={
+      "color": "lightgrey",
+      "label": "Missing values",
+    })
+```
+
+## User agents used for resolve requests
+
+Total requests for July and August 2022 grouped by browser family and brand of the device issuing the resolve requests.
+
+```{python}
+sql = '''select count(*) as n, 
+browser_family, 
+device_brand
+from logs 
+where t>='2022-07-01T00:00:00' 
+and redirect_url like 'http%hdl.handle.net%'
+group by browser_family, device_brand
+order by n desc'''
+df = pd.read_sql_query(sql, CN)
+itables.show(df,
+  scrollY="480px", 
+  scrollCollapse=True, 
+  paging=False,
+  dom='tpr'
+)
+```
